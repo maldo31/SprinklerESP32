@@ -24,6 +24,7 @@ uint8_t temprature_sens_read();
 
 uint8_t temprature_sens_read();
 int LED_BUILTIN = 2;
+int sensor_pin = 36;
 const int relay = 26;
 WebServer server(80);
 
@@ -36,6 +37,8 @@ bool sprinklingTimerEnabled = false;
 
 hw_timer_t *My_timer = NULL;
 
+
+
 void create_json(char *tag, float value, char *unit) {  
   jsonDocument.clear();  
   jsonDocument["type"] = tag;
@@ -43,6 +46,8 @@ void create_json(char *tag, float value, char *unit) {
   jsonDocument["unit"] = unit;
   serializeJson(jsonDocument, buffer);
 }
+
+
 
 void add_json_object(char *tag, float value, char *unit) {
   JsonObject obj = jsonDocument.createNestedObject();
@@ -63,6 +68,14 @@ void read_sensor_data(void * parameter) {
 void getTemperature() {
   Serial.println("Get temperature");
   create_json("temperature", temperature, "°C");
+  server.send(200, "application/json", buffer);
+}
+
+void get_moisture(){
+  int moistureValue = analogRead(sensor_pin);
+  Serial.println(moistureValue);
+  float moisturePrecentage = ( 100 - ( (moistureValue/1023.00) * 100 ) );
+  create_json("moisture", moisturePrecentage, "%");
   server.send(200, "application/json", buffer);
 }
 
@@ -132,26 +145,25 @@ void setup_task() {
 
 void addItselfToServer() {
    HTTPClient http;
-  //  while(mdns_init()!= ESP_OK){
-  //   delay(1000);
-  //   Serial.println("Starting MDNS...");
-  //   }
-  //   Serial.println("MDNS started");
-  //   IPAddress serverIp;
-  // while (serverIp.toString() == "0.0.0.0") {
-  //   Serial.println("Resolving host...");
-  //   delay(250);
-  //   serverIp = MDNS.queryHost("MASTER");
-  //   }
-  // Serial.println("Host address resolved:");
-  // Serial.println(serverIp.toString());
-  http.begin("http://192.168.88.254:8080/gpio/add_endpoint");
+   while(mdns_init()!= ESP_OK){
+    delay(1000);
+    Serial.println("Starting MDNS...");
+    }
+    Serial.println("MDNS started");
+    IPAddress serverIp;
+  while (serverIp.toString() == "0.0.0.0") {
+    Serial.println("Resolving host...");
+    delay(250);
+    serverIp = MDNS.queryHost("MASTER");
+    }
+  Serial.println("Host address resolved:");
+  Serial.println(serverIp.toString());
+  http.begin("http://" + serverIp.toString() + ":8080/UNSECURED/registerEndpoint");
   Serial.println("test123");
   http.addHeader("Content-Type", "application/json");
 
   StaticJsonDocument<200> doc;
   doc["address"] = WiFi.localIP().toString();
-  doc["name"] = "itsmemoron";
 
   String requestBody;
   serializeJson(doc, requestBody);
@@ -166,13 +178,14 @@ void setup_routing() {
   server.on("/relay", HTTP_POST, handlePost);
   server.on("/sprinkle", HTTP_POST, setupSprinkling);
   server.on("/add_to_server", addItselfToServer);
+  server.on("/moisture", get_moisture);
 }
 
 
   
 void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
-  Serial.begin(921600);
+  Serial.begin(115200);
   Serial.println("Hello from the setup");
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
    while (WiFi.status() != WL_CONNECTED) {
