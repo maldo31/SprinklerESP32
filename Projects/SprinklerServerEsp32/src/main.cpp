@@ -24,7 +24,7 @@ uint8_t temprature_sens_read();
 
 uint8_t temprature_sens_read();
 int LED_BUILTIN = 2;
-int sensor_pin = 36;
+int sensor_pin = 35;
 const int relay = 26;
 WebServer server(80);
 
@@ -71,12 +71,33 @@ void getTemperature() {
   server.send(200, "application/json", buffer);
 }
 
+int getMoisturePercentage(int moistureValue) {
+  if (moistureValue > 3300){
+     return 0;
+  }
+  moistureValue = (moistureValue - 700)*0.04;
+  int moisturePercentage = 100 - moistureValue;
+  
+  if(moisturePercentage > 100){
+     return 100;
+  } 
+
+  else if (moisturePercentage < 0)
+  {
+     return 0;
+  }
+  return moisturePercentage;
+}
+
 void get_moisture(){
   int moistureValue = analogRead(sensor_pin);
   Serial.println(moistureValue);
-  float moisturePrecentage = ( 100 - ( (moistureValue/1023.00) * 100 ) );
-  create_json("moisture", moisturePrecentage, "%");
+  float moisturePrecentage = getMoisturePercentage(moistureValue);
+  add_json_object("moisture", moisturePrecentage, "%");
+  add_json_object("moistureValue", moistureValue, "units");
+  serializeJson(jsonDocument, buffer);
   server.send(200, "application/json", buffer);
+  jsonDocument.clear();
 }
 
 void handlePost() {
