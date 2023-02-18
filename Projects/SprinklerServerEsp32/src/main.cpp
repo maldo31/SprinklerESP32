@@ -28,7 +28,7 @@ int sensor_pin = 35;
 const int relay = 26;
 WebServer server(80);
 
-
+bool takeMoistureIntoAccount = false;
 StaticJsonDocument<250> jsonDocument;
 char buffer[250];
 
@@ -71,7 +71,14 @@ void getTemperature() {
   server.send(200, "application/json", buffer);
 }
 
-int getMoisturePercentage(int moistureValue) {
+String btoss(bool x)
+{
+  if(x) return "True";
+  return "False";
+}
+
+int getMoisturePercentage() {
+  int moistureValue = analogRead(sensor_pin);
   if (moistureValue > 3300){
      return 0;
   }
@@ -86,18 +93,33 @@ int getMoisturePercentage(int moistureValue) {
   {
      return 0;
   }
-  return moisturePercentage;
+  return moisturePercentage*1;
 }
 
 void get_moisture(){
   int moistureValue = analogRead(sensor_pin);
   Serial.println(moistureValue);
-  float moisturePrecentage = getMoisturePercentage(moistureValue);
+  float moisturePrecentage = getMoisturePercentage();
   add_json_object("moisture", moisturePrecentage, "%");
   add_json_object("moistureValue", moistureValue, "units");
   serializeJson(jsonDocument, buffer);
   server.send(200, "application/json", buffer);
   jsonDocument.clear();
+}
+
+void setupIfToTakeMoistureIntoAccount(){
+
+   if (server.hasArg("plain") == false) {
+   }
+  String body = server.arg("plain");
+  deserializeJson(jsonDocument, body);
+
+  bool moistureSensorEnabled = jsonDocument["moistureSensorEnabled"];
+  takeMoistureIntoAccount = moistureSensorEnabled;
+  String response = "{Moisture sensor enabled set to:" + btoss(moistureSensorEnabled) + "}";
+  Serial.println(response);
+  server.send(200, "application/json", response);
+   
 }
 
 void handlePost() {
@@ -130,12 +152,22 @@ void IRAM_ATTR onTimer(){
   sprinklingTimerEnabled = false;
 }
 
+
+
 void setupSprinkling() {
   if (server.hasArg("plain") == false) {
   }
   String body = server.arg("plain");
   deserializeJson(jsonDocument, body);
-  if (sprinklingTimerEnabled == false){
+  if (takeMoistureIntoAccount == true){
+     if (getMoisturePercentage() > 90)
+     {
+       Serial.println("Soil is too moist");
+       server.send(200, "application/json", "{Soil moisture level is above >90%, sprinkling not executed}");
+       return;
+    }
+  }
+  else if (sprinklingTimerEnabled == false){
     long duration = jsonDocument["duration"];
     digitalWrite(relay, LOW);
     My_timer = timerBegin(0, 80, true);
@@ -145,7 +177,7 @@ void setupSprinkling() {
     timerAlarmEnable(My_timer);
     sprinklingTimerEnabled = true;
     server.send(200, "application/json", "{}");
-    
+    return;
   }
   else{
     Serial.println("Error ongoin sprinkling");
@@ -200,6 +232,7 @@ void setup_routing() {
   server.on("/sprinkle", HTTP_POST, setupSprinkling);
   server.on("/add_to_server", addItselfToServer);
   server.on("/moisture", get_moisture);
+  server.on("/sprinkleIfMoist", HTTP_POST, setupIfToTakeMoistureIntoAccount);
 }
 
 
