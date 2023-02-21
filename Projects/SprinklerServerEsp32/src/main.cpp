@@ -28,7 +28,9 @@ int sensor_pin = 35;
 const int relay = 26;
 WebServer server(80);
 volatile byte pulseCount;
+TaskHandle_t flowTask;
 
+long nextWatteringStop = 0;
 long currentMillis = 0;
 long previousMillis = 0;
 int interval = 1000;
@@ -37,14 +39,14 @@ byte pulse1Sec = 0;
 float flowRate;
 unsigned int flowMilliLitres;
 unsigned long totalMilliLitres;
-
+const TickType_t xDelay = 500;
 
 bool takeMoistureIntoAccount = false;
 StaticJsonDocument<250> jsonDocument;
 char buffer[250];
 
 float temperature;
-bool sprinklingTimerEnabled = false;
+bool sprinklingEnabled = false;
 
 hw_timer_t *My_timer = NULL;
 
@@ -79,6 +81,53 @@ void read_sensor_data(void * parameter) {
    }
 }
 
+void flowCounter( void * pvParameters){
+   
+   Serial.print("Task flow counter running on core ");
+   Serial.println(xPortGetCoreID());
+   currentMillis = millis();
+
+   if (currentMillis - previousMillis > interval)
+   {
+
+     pulse1Sec = pulseCount;
+     pulseCount = 0;
+
+     // Because this loop may not complete in exactly 1 second intervals we calculate
+     // the number of milliseconds that have passed since the last execution and use
+     // that to scale the output. We also apply the calibrationFactor to scale the output
+     // based on the number of pulses per second per units of measure (litres/minute in
+     // this case) coming from the sensor.
+     flowRate = ((1000.0 / (millis() - previousMillis)) * pulse1Sec) / calibrationFactor;
+     previousMillis = millis();
+
+     // Divide the flow rate in litres/minute by 60 to determine how many litres have
+     // passed through the sensor in this 1 second interval, then multiply by 1000 to
+     // convert to millilitres.
+     flowMilliLitres = (flowRate / 60) * 1000;
+
+     // Add the millilitres passed in this second to the cumulative total
+     totalMilliLitres += flowMilliLitres;
+      vTaskDelay( xDelay );
+     // Print the flow rate for this second in litres / minute
+     // Serial.print("Flow rate: ");
+     // Serial.print(int(flowRate));  // Print the integer part of the variable
+     // Serial.print("L/min");
+     // Serial.print("\t");       // Print tab space
+
+     // // Print the cumulative total of litres flowed since starting
+     // Serial.print("Output Liquid Quantity: ");
+     // Serial.print(totalMilliLitres);
+     // Serial.print("mL / ");
+     // Serial.print(totalMilliLitres / 1000);
+     // Serial.println("L");
+  }
+  
+  
+
+}
+
+
 void getTemperature() {
   Serial.println("Get temperature");
   create_json("temperature", temperature, "°C");
@@ -95,6 +144,15 @@ void getTotalFlow() {
   Serial.println("Get total flow");
   create_json("totalFlowed", totalMilliLitres/1000, "L");
   server.send(200, "application/json", buffer);
+}
+
+void turnOfWattering(){
+  if (nextWatteringStop >= totalMilliLitres){
+    digitalWrite(relay, LOW);
+    Serial.println("Wattering stopped");
+    sprinklingEnabled = false;
+    return;
+  }
 }
 
 String btoss(bool x)
@@ -175,7 +233,7 @@ void IRAM_ATTR onTimer(){
   timerWrite(My_timer, 0);
   timerDetachInterrupt(My_timer);
   timerEnd(My_timer);
-  sprinklingTimerEnabled = false;
+  sprinklingEnabled = false;
 }
 
 void IRAM_ATTR pulseCounter()
@@ -198,17 +256,26 @@ void setupSprinkling() {
        return;
     }
   }
-  else if (sprinklingTimerEnabled == false){
-    long duration = jsonDocument["duration"];
-    digitalWrite(relay, LOW);
-    My_timer = timerBegin(0, 80, true);
+  else if (sprinklingEnabled == false){
+    bool flowControlled = jsonDocument["flowControlled"];
+    if(flowControlled){
+      long totalWaterFlow = jsonDocument["quantity"];
+      nextWatteringStop = totalMilliLitres + totalWaterFlow;
+      sprinklingEnabled = true;
+    }
+    else{
+      long duration = jsonDocument["quantity"];
+      digitalWrite(relay, LOW);
+      My_timer = timerBegin(0, 80, true);
 
-    timerAttachInterrupt(My_timer, &onTimer, true);
-    timerAlarmWrite(My_timer, duration * 1000000, true);
-    timerAlarmEnable(My_timer);
-    sprinklingTimerEnabled = true;
-    server.send(200, "application/json", "{}");
-    return;
+      timerAttachInterrupt(My_timer, &onTimer, true);
+      timerAlarmWrite(My_timer, duration * 1000000, true);
+      timerAlarmEnable(My_timer);
+      sprinklingEnabled = true;
+      server.send(200, "application/json", "{}");
+      return;
+    }
+    
   }
   else{
     Serial.println("Error ongoin sprinkling");
@@ -289,47 +356,21 @@ void setup() {
   setup_routing();
   setup_task();
   addItselfToServer();
-  server.begin(); 
-  attachInterrupt(digitalPinToInterrupt(SENSOR), pulseCounter, FALLING);   
+  server.begin();
+  attachInterrupt(digitalPinToInterrupt(SENSOR), pulseCounter, FALLING);
+  xTaskCreatePinnedToCore(
+                    flowCounter,   /* Task function. */
+                    "Task2",     /* name of task. */
+                    10000,       /* Stack size of task */
+                    NULL,        /* parameter of the task */
+                    1,           /* priority of the task */
+                    &flowTask,      /* Task handle to keep track of created task */
+                    1);          /* pin task to core 1 */
+    delay(500); ;   
 }
 
 bool isConnected = false;
 
 void loop() {
   server.handleClient();
-  currentMillis = millis();
-  if (currentMillis - previousMillis > interval) {
-    
-    pulse1Sec = pulseCount;
-    pulseCount = 0;
-
-    // Because this loop may not complete in exactly 1 second intervals we calculate
-    // the number of milliseconds that have passed since the last execution and use
-    // that to scale the output. We also apply the calibrationFactor to scale the output
-    // based on the number of pulses per second per units of measure (litres/minute in
-    // this case) coming from the sensor.
-    flowRate = ((1000.0 / (millis() - previousMillis)) * pulse1Sec) / calibrationFactor;
-    previousMillis = millis();
-
-    // Divide the flow rate in litres/minute by 60 to determine how many litres have
-    // passed through the sensor in this 1 second interval, then multiply by 1000 to
-    // convert to millilitres.
-    flowMilliLitres = (flowRate / 60) * 1000;
-
-    // Add the millilitres passed in this second to the cumulative total
-    totalMilliLitres += flowMilliLitres;
-    
-    // Print the flow rate for this second in litres / minute
-    Serial.print("Flow rate: ");
-    Serial.print(int(flowRate));  // Print the integer part of the variable
-    Serial.print("L/min");
-    Serial.print("\t");       // Print tab space
-
-    // Print the cumulative total of litres flowed since starting
-    Serial.print("Output Liquid Quantity: ");
-    Serial.print(totalMilliLitres);
-    Serial.print("mL / ");
-    Serial.print(totalMilliLitres / 1000);
-    Serial.println("L");
-  }
 }
